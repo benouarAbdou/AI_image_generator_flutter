@@ -1,8 +1,11 @@
 import 'dart:convert';
 import 'dart:typed_data';
-
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:media_scanner/media_scanner.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 void main() {
   runApp(const MyApp());
@@ -56,10 +59,12 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  Future<void> generateImage(String text) async {
+  Future<void> generateImage(String text, {bool isRegenerate = false}) async {
     setState(() {
       _loading = true;
-      _messages.add(Message(text: text, isUser: true));
+      if (!isRegenerate) {
+        _messages.add(Message(text: text, isUser: true));
+      }
       _messages
           .add(Message(text: "We are treating your prompt...", isUser: false));
     });
@@ -98,7 +103,8 @@ class _HomePageState extends State<HomePage> {
           _messages.add(Message(
               text: "AI Generated Image",
               isUser: false,
-              imageData: response.bodyBytes));
+              imageData: response.bodyBytes,
+              prompt: text));
           _loading = false;
         });
       } else {
@@ -121,6 +127,61 @@ class _HomePageState extends State<HomePage> {
     _scrollToBottom();
   }
 
+  Future<void> saveImage(Uint8List imageData) async {
+    final status = await Permission.storage.request();
+    if (status.isGranted) {
+      final directory = Directory('/storage/emulated/0/aiimages');
+      if (!await directory.exists()) {
+        await directory.create(recursive: true);
+      }
+      final file = File(
+          '${directory.path}/image_${DateTime.now().millisecondsSinceEpoch}.png');
+      await file.writeAsBytes(imageData);
+
+      // Scan the file to make it visible in the gallery
+      await MediaScanner.loadMedia(path: file.path);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('Image saved to ${file.path} and added to gallery')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Permission denied to save image')),
+      );
+    }
+  }
+
+  void _showFullScreenImage(Uint8List imageData) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (BuildContext context) {
+          return Scaffold(
+            appBar: AppBar(
+              backgroundColor: Colors.black,
+              leading: IconButton(
+                icon: const Icon(Icons.arrow_back, color: Colors.white),
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+            ),
+            body: Container(
+              color: Colors.black,
+              child: Center(
+                child: InteractiveViewer(
+                  panEnabled: true,
+                  boundaryMargin: const EdgeInsets.all(20),
+                  minScale: 0.5,
+                  maxScale: 4,
+                  child: Image.memory(imageData),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -134,6 +195,8 @@ class _HomePageState extends State<HomePage> {
               itemCount: _messages.length,
               itemBuilder: (context, index) {
                 final message = _messages[index];
+                final isLastImage =
+                    index == _messages.length - 1 && message.imageData != null;
                 return Align(
                   alignment: message.isUser
                       ? Alignment.centerRight
@@ -157,10 +220,35 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                     child: message.imageData != null
-                        ? ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
-                            child: Image.memory(message.imageData!,
-                                width: 200, height: 200),
+                        ? Column(
+                            children: [
+                              GestureDetector(
+                                onTap: () =>
+                                    _showFullScreenImage(message.imageData!),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(10),
+                                  child: Image.memory(message.imageData!,
+                                      width: 200, height: 200),
+                                ),
+                              ),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.save),
+                                    onPressed: () =>
+                                        saveImage(message.imageData!),
+                                  ),
+                                  if (isLastImage)
+                                    IconButton(
+                                      icon: const Icon(Icons.refresh),
+                                      onPressed: () => generateImage(
+                                          message.prompt!,
+                                          isRegenerate: true),
+                                    ),
+                                ],
+                              ),
+                            ],
                           )
                         : Padding(
                             padding: const EdgeInsets.symmetric(
@@ -214,10 +302,7 @@ class _HomePageState extends State<HomePage> {
                     padding: const EdgeInsets.all(10),
                     decoration: const BoxDecoration(
                         color: Color(0xFF587AF6), shape: BoxShape.circle),
-                    child: const Icon(
-                      Icons.add,
-                      color: Colors.white,
-                    ),
+                    child: const Icon(Icons.add, color: Colors.white),
                   ),
                 )
               ],
@@ -233,6 +318,8 @@ class Message {
   final String text;
   final bool isUser;
   final Uint8List? imageData;
+  final String? prompt;
 
-  Message({required this.text, required this.isUser, this.imageData});
+  Message(
+      {required this.text, required this.isUser, this.imageData, this.prompt});
 }
